@@ -1,0 +1,261 @@
+---
+title: The Effect of the Loss Function on Quality of Anomaly Detection - 2st Report
+author: Viktor Bílek
+date: 12.11.2020
+---
+
+
+# Introduction
+Comparison of maximum-likelihood and quantile likelihood loss function
+for anomaly detection using SPTN model.
+
+```julia; echo = false; results = "hidden"
+using ToyProblems, DistributionsAD, SumProductTransform, Unitary, Flux, Setfield
+using Distributions, Statistics, MLDataPattern, EvalMetrics
+using Flux:throttle
+using SumProductTransform: fit!, maptree
+using ToyProblems: flower2
+using SumProductTransform: ScaleShift, SVDDense
+using DistributionsAD: TuringMvNormal
+include("..//src//AnomalyTools.jl")
+
+using Plots
+
+function sptn(d, n, l)
+	m = TransformationNode(ScaleShift(d),  TuringMvNormal(d,1f0))
+	for i in 1:l
+		m = SumNode([TransformationNode(SVDDense(2, identity, :butterfly), m)
+					for i in 1:n])
+	end
+	return(m)
+end
+```
+
+# Playing with EvalMetrics
+```julia; results = "hidden"
+targets = rand(0:1, 100)
+scores = rand(100)
+
+binary_eval_report(targets, scores)
+
+prplot(targets, scores)
+rocplot(targets, scores)
+
+predicts = scores .>= 0.6
+cm0 = ConfusionMatrix(targets, scores, 0.0)
+cm1 = ConfusionMatrix(targets, scores, 1.0)
+```
+
+# Model and training data
+All SPTN models, training data and anomaly data in this example
+will correspond to block of code below
+```julia; results = "hidden", eval = false
+m = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+
+ps = Flux.params(m)
+opt = ADAM(0.1)
+```
+# Classic max-likelihood loss function
+Training via maximum-likelihood on clean data (without anomalies).
+```julia; echo = false; results = "hidden"
+m = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x = RandomBatches(x_train, 100, 1000)
+#scatter(x_train[1, :], x_train[2, :])
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+```
+```julia;
+loss(x) = -mean(logpdf(m, x))
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt)
+```
+Heatmap of learned distribution.
+```julia;
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+Addition of anomalous data and confusionmatrix.
+```julia;
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x_noised = hcat(x_train, x_anom)
+#scatter(x_noised[1, :], x_noised[2, :])
+
+targets = vcat(ones(99999), zeros(10000)) .== 1
+scores_ml = logpdf(m, x_noised)
+
+binary_eval_report(targets, scores_ml)
+```
+Precision-Recall plot.
+```julia;
+prplot(targets, scores_ml)
+```
+Roc plot.
+```julia;
+rocplot(targets, scores_ml)
+```
+Anomaly separation - keeping false-negative ratio under 1%.
+```julia;
+θ_fnr = threshold_at_fnr(targets, scores_ml, 0.01)
+
+anom, norms = tresh_lkl(m, x_noised, θ_fnr)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+# Quantile loss function
+Training via quantile loss on clean data (without anomalies).
+```julia; echo = false; results = "hidden"
+m = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x = RandomBatches(x_train, 100, 1000)
+#scatter(x_train[1, :], x_train[2, :])
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+```
+```julia;
+loss(x) = -quantile_loss(m, x, 0.1, range=(0, 70))
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt)
+```
+Heatmap of learned distribution.
+```julia;
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+Addition of anomalous data and confusionmatrix.
+```julia;
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x_noised = hcat(x_train, x_anom)
+#scatter(x_noised[1, :], x_noised[2, :])
+
+targets = vcat(ones(99999), zeros(10000)) .== 1
+scores_q = logpdf(m, x_noised)
+
+binary_eval_report(targets, scores_q)
+```
+Precision-Recall plot.
+```julia;
+prplot(targets, scores_q)
+```
+Roc plot.
+```julia;
+rocplot(targets, scores_q)
+```
+Anomaly separation - keeping false-negative ratio under 1%.
+```julia;
+θ_fnr = threshold_at_fnr(targets, scores_q, 0.01)
+
+anom, norms = tresh_lkl(m, x_noised, θ_fnr)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+# ROC graph comparison of max-likelihood and quantile with clean training set
+```julia;
+rocplot([targets, targets], [scores_ml, scores_q], label = ["ml" "quantile"])
+```
+# Classic max-likelihood loss function - training with anomalies
+Training via maximum-likelihood on noised data (with anomalies).
+```julia; echo = false; results = "hidden"
+m = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x = RandomBatches(shuffleobs(hcat(x_train, x_anom)), 100, 1000)
+#scatter(x_train[1, :], x_train[2, :])
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+```
+```julia;
+loss(x) = -mean(logpdf(m, x))
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt)
+```
+Heatmap of learned distribution.
+```julia;
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+Confusionmatrix.
+```julia;
+x_noised = hcat(x_train, x_anom)
+
+targets = vcat(ones(99999), zeros(10000)) .== 1
+scores_aml = logpdf(m, x_noised)
+
+binary_eval_report(targets, scores_aml)
+```
+Precision-Recall plot.
+```julia;
+prplot(targets, scores_aml)
+```
+Roc plot.
+```julia;
+rocplot(targets, scores_aml)
+```
+Anomaly separation - keeping false-negative ratio under 1%.
+```julia;
+θ_fnr = threshold_at_fnr(targets, scores_aml, 0.01)
+
+anom, norms = tresh_lkl(m, x_noised, θ_fnr)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+# Quantile loss function - training with anomalies
+Training via quantile loss on noised data (with anomalies).
+```julia; echo = false; results = "hidden"
+m = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x = RandomBatches(shuffleobs(hcat(x_train, x_anom)), 100, 1000)
+#scatter(x_train[1, :], x_train[2, :])
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+```
+```julia;
+loss(x) = -quantile_loss(m, x, 0.1, range=(0, 70))
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt)
+```
+Heatmap of learned distribution.
+```julia;
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+Confusionmatrix.
+```julia;
+x_noised = hcat(x_train, x_anom)
+
+targets = vcat(ones(99999), zeros(10000)) .== 1
+scores_aq = logpdf(m, x_noised)
+
+binary_eval_report(targets, scores_aq)
+```
+Precision-Recall plot.
+```julia;
+prplot(targets, scores_aq)
+```
+Roc plot.
+```julia;
+rocplot(targets, scores_aq)
+```
+Anomaly separation - keeping false-negative ratio under 1%.
+```julia;
+θ_fnr = threshold_at_fnr(targets, scores_aq, 0.01)
+
+anom, norms = tresh_lkl(m, x_noised, θ_fnr)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+# ROC graph comparison of max-likelihood and quantile with training with anomalies
+```julia;
+rocplot([targets, targets], [scores_aml, scores_aq], label = ["ml" "quantile"])
+```

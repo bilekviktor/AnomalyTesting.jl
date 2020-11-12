@@ -6,8 +6,9 @@ using SumProductTransform: fit!, maptree
 using ToyProblems: flower2
 using SumProductTransform: ScaleShift, SVDDense
 using DistributionsAD: TuringMvNormal
+include("..//src//AnomalyTools.jl")
 
-using Plots, Weave
+using Plots
 
 function sptn(d, n, l)
 	m = TransformationNode(ScaleShift(d),  TuringMvNormal(d,1f0))
