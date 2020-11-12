@@ -7,12 +7,13 @@ using ToyProblems: flower2
 using SumProductTransform: ScaleShift, SVDDense
 using DistributionsAD: TuringMvNormal
 
-using Plots
+using Plots, Weave
 
 function sptn(d, n, l)
 	m = TransformationNode(ScaleShift(d),  TuringMvNormal(d,1f0))
 	for i in 1:l
-		m = SumNode([TransformationNode(SVDDense(2, identity, :butterfly), m) for i in 1:n])
+		m = SumNode([TransformationNode(SVDDense(2, identity, :butterfly), m)
+					for i in 1:n])
 	end
 	return(m)
 end

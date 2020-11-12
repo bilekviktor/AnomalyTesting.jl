@@ -1,0 +1,112 @@
+---
+title: The Effect of the Loss Function on Quality of Anomaly Detection - 1st Report
+author: Viktor Bílek
+date: 12.11.2020
+---
+
+
+# Introduction
+Comparison of maximum-likelihood and quantile likelihood loss function
+for anomaly detection using SPTN model.
+
+
+<!-- this setup dependencies, but doesn't appear in the generated document -->
+```julia; echo = false; results = "hidden"
+using ToyProblems, DistributionsAD, SumProductTransform, Unitary, Flux, Setfield
+using Distributions, Statistics, MLDataPattern
+using Flux:throttle
+using SumProductTransform: fit!, maptree
+using ToyProblems: flower2
+using SumProductTransform: ScaleShift, SVDDense
+using DistributionsAD: TuringMvNormal
+
+using Plots, Weave
+include("..//src//AnomalyTools.jl")
+```
+# Definition of SPTN model
+```julia;
+function sptn(d, n, l)
+	m = TransformationNode(ScaleShift(d),  TuringMvNormal(d,1f0))
+	for i in 1:l
+		m = SumNode([TransformationNode(SVDDense(2, identity, :butterfly), m)
+					for i in 1:n])
+	end
+	return(m)
+end
+
+```
+
+# Anomaly detection with max-likelihood estimate loss
+Initialization of model and training data + anomalies.
+In this example we train model on data including anomalies.
+```julia;
+m = sptn(2, 9, 1)
+
+x_n = flower2(1000, npetals=9)
+x_a = randn(2, 10)
+scatter(x_n[1, :], x_n[2, :])
+scatter!(x_a[1, :], x_a[2, :])
+x = shuffleobs(hcat(x_n, x_a))
+#scatter(x[1, :], x[2, :])
+_data = Iterators.repeated((), 100)
+```
+Definition of loss function (max-likelihood) and start of training.
+```julia;
+loss() = -mean(logpdf(m, x))
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+Flux.Optimise.train!(() -> loss(), ps, _data, opt)
+```
+Heatmap of trained distribution.
+```julia;
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+Scatter plot of anomaly detection.
+```julia;
+lkl = logpdf(m, x)
+θ = quantile_tresh(lkl, 0.01)
+
+anom, norms = tresh_lkl(m, x, θ)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+
+# Anomaly detection with quantile loss
+Model init. + train/anomaly data + training
+```julia;
+m = sptn(2, 9, 1)
+
+x_n = flower2(1000, npetals=9)
+x_a = randn(2, 10)
+scatter(x_n[1, :], x_n[2, :])
+scatter!(x_a[1, :], x_a[2, :])
+x = shuffleobs(hcat(x_n, x_a))
+#scatter(x[1, :], x[2, :])
+_data = Iterators.repeated((), 100)
+
+loss() = -quantile_loss(m, x, 0.01, range=(0, 40))
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+Flux.Optimise.train!(() -> loss(), ps, _data, opt)
+```
+Heatmap of trained distribution
+```julia;
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+Scatter plot of anomaly detection.
+```julia;
+lkl = logpdf(m, x)
+θ = quantile_tresh(lkl, 0.01)
+
+anom, norms = tresh_lkl(m, x, θ)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
