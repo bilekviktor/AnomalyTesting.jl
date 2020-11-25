@@ -2,8 +2,8 @@ using InvertedIndices
 using Statistics
 
 
-function tresh_lkl(m, x, θ)
-    loglhl = logpdf(m, x)
+function tresh_lkl(m, x, θ, an_score=-1)
+    loglhl = an_score*logpdf(m, x)
     an_index = findall(loglhl .< θ)
     return x[:, an_index], x[:, Not(an_index)]
 end

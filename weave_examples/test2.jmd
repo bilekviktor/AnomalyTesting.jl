@@ -1,5 +1,5 @@
 ---
-title: The Effect of the Loss Function on Quality of Anomaly Detection - 2st Report
+title: The Effect of the Loss Function on Quality of Anomaly Detection - 2nd Report
 author: Viktor Bílek
 date: 12.11.2020
 ---
@@ -63,6 +63,7 @@ Training via maximum-likelihood on clean data (without anomalies).
 m = sptn(2, 9, 2)
 x_train = flower2(100000, npetals=9)
 x = RandomBatches(x_train, 100, 1000)
+
 #scatter(x_train[1, :], x_train[2, :])
 
 ps = Flux.params(m)

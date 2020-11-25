@@ -1,0 +1,388 @@
+---
+title: The Effect of the Loss Function on Quality of Anomaly Detection - 3rd Report
+author: Viktor Bílek
+date: 23.11.2020
+---
+
+
+# Introduction
+Comparison of maximum-likelihood and quantile likelihood loss function
+for anomaly detection using SPTN and FFJORD model. We will use real data as well
+in this session.
+
+```julia; echo = false; results = "hidden"
+using ToyProblems, DistributionsAD, SumProductTransform, Unitary, Flux, Setfield
+using Distributions, Statistics, MLDataPattern, EvalMetrics
+using Flux:throttle
+using SumProductTransform: fit!, maptree
+using ToyProblems: flower2
+using SumProductTransform: ScaleShift, SVDDense
+using DistributionsAD: TuringMvNormal
+using FfjordFlow
+using DelimitedFiles
+include("..//src//AnomalyTools.jl")
+
+using Plots
+
+function sptn(d, n, l)
+	m = TransformationNode(ScaleShift(d),  TuringMvNormal(d,1f0))
+	for i in 1:l
+		m = SumNode([TransformationNode(SVDDense(d, identity, :butterfly), m)
+					for i in 1:n])
+	end
+	return(m)
+end
+```
+# Anomaly detection terms:
+- fp - number of false positives etc.
+- p - positives = tp + fn
+- fpr - false positive rate = fp/p = fp/(tp + fn) = FALL OUT
+- tpr - true positive rate = tp/p = 1 - fnr = SENSITIVITY, RECALL, HIT RATE
+- tnr - true negative rate = tn/n = 1 - fpr = SPECIFITY, SELECTIVITY
+- fnr - ....................................... = MISS RATE
+- acc - ACCURACY = (tp + tn)/(p + n)
+
+
+# Model and loss comparion on anomaly detection
+1st we will train two SPTN model - one with ml loss other with quantile loss
+ with 0.05 quantile.  2nd we will do analogous test with FFJORD model.
+ This session we will train on 2D dataset - flower.
+
+ Next we will do analogous test with 8D real data.
+
+ # 2D SPTN
+ All SPTN models, training data and anomaly data in this example
+ will correspond to block of code below.
+
+ In other word - 100 iteration with batch size 1000.
+
+```julia; results = "hidden", eval = false
+m = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x = RandomBatches(x_train, 1000, 100)
+
+ps = Flux.params(m)
+opt = ADAM(0.1)
+```
+# ML loss
+```julia; echo =false; results = "hidden"
+m = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x = RandomBatches(x_train, 1000, 100)
+#scatter(x_train[1, :], x_train[2, :])
+
+loss(x) = -mean(logpdf(m, x))
+
+cb = function()
+	println(loss(x_train))
+end
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt, cb=cb)
+```
+ heatmap:
+```julia; echo = false;
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+
+```julia; echo = false, results = "hidden"
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x_noised = hcat(x_train, x_anom)
+#scatter(x_noised[1, :], x_noised[2, :])
+
+targets = vcat(ones(99999), zeros(10000)) .!= 1
+scores_ml = -logpdf(m, x_noised)
+```
+
+```julia;
+fpr = 0.05
+tresh_line = [fpr 0.0; fpr 1.0]
+binary_eval_report(targets, scores_ml)
+```
+```julia;
+prplot(targets, scores_ml)
+```
+```julia;
+rocplot(targets, scores_ml)
+plot!(tresh_line[:, 1], tresh_line[:, 2], linestyle =:dashdot, linecolor=:grey, label="fpr treshhold")
+```
+
+```julia;
+θ_fpr = threshold_at_fpr(targets, scores_ml, fpr)
+
+anom, norms = tresh_lkl(m, x_noised, θ_fpr)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+
+# Quantile loss function
+```julia; results="hidden"
+loss(x) = -quantile_loss(m, x, 0.05, range=(1, 3))
+```
+
+```julia; echo=false, results="hidden"
+m = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x = RandomBatches(x_train, 1000, 100)
+#scatter(x_train[1, :], x_train[2, :])
+
+loss(x) = -quantile_loss(m, x, 0.05, range=(1, 1))
+
+cb = function()
+	println(loss(x_train))
+end
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt, cb=cb)
+```
+```julia; echo=false
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+
+```julia; echo=false, results="hidden"
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x_noised = hcat(x_train, x_anom)
+
+targets = vcat(ones(99999), zeros(10000)) .!= 1
+scores_q = -logpdf(m, x_noised)
+```
+
+```julia;
+fpr = 0.05
+tresh_line = [fpr 0.0; fpr 1.0]
+binary_eval_report(targets, scores_q)
+```
+```julia;
+prplot(targets, scores_q)
+```
+```julia;
+rocplot(targets, scores_q)
+```
+
+```julia;
+θ_fpr = threshold_at_fpr(targets, scores_q, fpr)
+
+anom, norms = tresh_lkl(m, x_noised, θ_fpr)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+
+# Comparison of qunatile loss nad mlh loss
+```julia;
+rocplot([targets, targets], [scores_ml, scores_q], label = ["ml" "quantile"])
+plot!(tresh_line[:, 1], tresh_line[:, 2], linestyle =:dashdot, linecolor=:grey, label="fpr treshhold")
+```
+
+
+
+# 2D FFJORD
+All FFJORD models, training data and anomaly data in this example
+will correspond to block of code below.
+
+In other word - 100 iteration with batch size 1000.
+
+```julia; results = "hidden", eval = false
+m = Ffjord(Chain(Dense(2, 20, tanh), Dense(20, 2)), (0.0, 1.0))
+x_train = flower2(100000, npetals=9)
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x = RandomBatches(x_train, 1000, 100)
+
+ps = Flux.params(m)
+opt = ADAM(0.01)
+```
+# ML loss
+```julia; echo =false; results = "hidden"
+m = Ffjord(Chain(Dense(2, 20, tanh), Dense(20, 2)), (0.0, 1.0))
+x_train = flower2(100000, npetals=9)
+x = RandomBatches(x_train, 1000, 100)
+#scatter(x_train[1, :], x_train[2, :])
+
+loss(x) = -mean(logpdf(m, x))
+
+cb = function()
+ println(loss(x_train))
+end
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt, cb=cb)
+```
+heatmap:
+```julia; echo = false;
+m = Cnf(m)
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+
+```julia; echo = false, results = "hidden"
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x_noised = hcat(x_train, x_anom)
+#scatter(x_noised[1, :], x_noised[2, :])
+
+targets = vcat(ones(99999), zeros(10000)) .!= 1
+scores_fml = -logpdf(m, x_noised)
+```
+
+```julia;
+fpr = 0.05
+tresh_line = [fpr 0.0; fpr 1.0]
+binary_eval_report(targets, scores_fml)
+```
+```julia;
+prplot(targets, scores_fml)
+```
+```julia;
+rocplot(targets, scores_fml)
+plot!(tresh_line[:, 1], tresh_line[:, 2], linestyle =:dashdot, linecolor=:grey, label="fpr treshhold")
+```
+
+```julia;
+θ_fpr = threshold_at_fpr(targets, scores_fml, fpr)
+
+anom, norms = tresh_lkl(m, x_noised, θ_fpr)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+
+# Quantile loss function
+```julia; results="hidden"
+loss(x) = -quantile_loss(m, x, 0.05, range=(1, 1))
+```
+
+```julia; echo=false, results="hidden"
+m = Ffjord(Chain(Dense(2, 20, tanh), Dense(20, 2)), (0.0, 1.0))
+x_train = flower2(100000, npetals=9)
+x = RandomBatches(x_train, 1000, 100)
+#scatter(x_train[1, :], x_train[2, :])
+
+loss(x) = -quantile_loss(m, x, 0.05, range=(1, 3))
+
+cb = function()
+ println(loss(x_train))
+end
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt, cb=cb)
+```
+```julia; echo=false
+m = Cnf(m)
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+
+```julia; echo=false, results="hidden"
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x_noised = hcat(x_train, x_anom)
+
+targets = vcat(ones(99999), zeros(10000)) .!= 1
+scores_fq = -logpdf(m, x_noised)
+```
+
+```julia;
+fpr = 0.05
+tresh_line = [fpr 0.0; fpr 1.0]
+binary_eval_report(targets, scores_fq)
+```
+```julia;
+prplot(targets, scores_fq)
+```
+```julia;
+rocplot(targets, scores_fq)
+```
+
+```julia;
+θ_fpr = threshold_at_fpr(targets, scores_fq, fpr)
+
+anom, norms = tresh_lkl(m, x_noised, θ_fpr)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+
+# Comparison of qunatile loss nad mlh loss
+```julia;
+rocplot([targets, targets], [scores_fml, scores_fq], label = ["ml" "quantile"])
+plot!(tresh_line[:, 1], tresh_line[:, 2], linestyle =:dashdot, linecolor=:grey, label="fpr treshhold")
+```
+
+# Comparison of all 4 version
+```julia;
+rocplot([targets, targets, targets, targets], [scores_ml, scores_q, scores_fml, scores_fq], label = ["sptn - ml" "sptn -quantile" "ffjord - ml" "ffjord -quantile"])
+plot!(tresh_line[:, 1], tresh_line[:, 2], linestyle =:dashdot, linecolor=:grey, label="fpr treshhold")
+```
+
+# Quantile loss function of SPTN with more qunatile loss values
+```julia; results="hidden"
+loss(x) = -quantile_loss(m, x, 0.05, range=(0, 900))
+```
+
+```julia; echo=false, results="hidden"
+m = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x = RandomBatches(x_train, 1000, 100)
+#scatter(x_train[1, :], x_train[2, :])
+
+loss(x) = -quantile_loss(m, x, 0.05, range=(1, 1))
+
+cb = function()
+	println(loss(x_train))
+end
+
+ps = Flux.params(m)
+
+opt = ADAM(0.1)
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt, cb=cb)
+```
+```julia; echo=false
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+
+```julia; echo=false, results="hidden"
+x_anom = 10 .* (rand(2, 10000) .- 0.5)
+x_noised = hcat(x_train, x_anom)
+
+targets = vcat(ones(99999), zeros(10000)) .!= 1
+scores_qq = -logpdf(m, x_noised)
+```
+
+```julia;
+fpr = 0.05
+tresh_line = [fpr 0.0; fpr 1.0]
+binary_eval_report(targets, scores_qq)
+```
+```julia;
+prplot(targets, scores_qq)
+```
+```julia;
+rocplot(targets, scores_qq)
+```
+
+```julia;
+θ_fpr = threshold_at_fpr(targets, scores_qq, fpr)
+
+anom, norms = tresh_lkl(m, x_noised, θ_fpr)
+scatter(norms[1, :], norms[2, :])
+scatter!(anom[1, :], anom[2, :])
+```
+# Comparison of -1:1 element vs 0:900 qunatile loss vs ml loss
+```julia;
+rocplot([targets, targets, targets], [scores_q, scores_qq, scores_ml],
+        label = ["-1:1 quan." "0:900 quan." "ml"])
+plot!(tresh_line[:, 1], tresh_line[:, 2],
+      linestyle =:dashdot, linecolor=:grey, label="fpr treshhold")
+```
