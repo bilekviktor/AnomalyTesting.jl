@@ -1,0 +1,197 @@
+---
+title: The Effect of the Loss Function on Quality of Anomaly Detection - Report 5.1.
+author: Viktor Bílek
+date: 21.1.2021
+---
+
+
+# Introduction
+Comparison of maximum-likelihood and calibrated loss function
+for anomaly detection using SPTN model.
+
+```julia; echo = false; results = "hidden"
+using ToyProblems, DistributionsAD, SumProductTransform, Unitary, Flux, Setfield
+using Distributions, Statistics, MLDataPattern, EvalMetrics
+using Flux:throttle
+using SumProductTransform: fit!, maptree
+using ToyProblems: flower2
+using SumProductTransform: ScaleShift, SVDDense
+using DistributionsAD: TuringMvNormal
+using DelimitedFiles
+include("..//src//AnomalyTools.jl")
+
+using Plots
+
+function sptn(d, n, l)
+	m = TransformationNode(ScaleShift(d),  TuringMvNormal(d,1f0))
+	for i in 1:l
+		m = SumNode([TransformationNode(SVDDense(d, identity, :butterfly), m)
+					for i in 1:n])
+	end
+	return(m)
+end
+```
+# Anomaly detection terms:
+- fp - number of false positives etc.
+- p - positives = tp + fn
+- fpr - false positive rate = fp/p = fp/(tp + fn) = FALL OUT
+- tpr - true positive rate = tp/p = 1 - fnr = SENSITIVITY, RECALL, HIT RATE
+- tnr - true negative rate = tn/n = 1 - fpr = SPECIFITY, SELECTIVITY
+- fnr - ....................................... = MISS RATE
+- acc - ACCURACY = (tp + tn)/(p + n)
+
+# Model and loss comparion on anomaly detection
+We will train SPTN models on 2D dataset flower two. We will compare classic
+ML estimate, centered quantile take and right quantile take.
+
+We will use batches of size 1000. For ML estimate we will train model with
+1000 iterations. Qunatile takes reduce batch sizes, so we have to use more
+iterations - 20 000 preciesly.
+
+# ML estimate
+
+```julia;
+m1 = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x_val = flower2(1000, npetals=9)
+x = RandomBatches(x_train, 1000, 1000)
+
+loss(x) = -mean(logpdf(m1, x))
+
+ps = Flux.params(m1)
+
+opt = ADAM(0.01)
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, x, opt)
+println("Final ML loss: ", loss(x_val))
+```
+Heatmap:
+```julia; echo = false
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m1, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+
+Generating anomalies and test set. FPR at 0.05
+```julia; results="hidden"
+x_test = flower2(100000, npetals=9)
+x_anom = 10 .* (rand(2, 5000) .- 0.5)
+fpr = 0.05
+```
+Evaluation
+```julia;
+targets1, scores1 = target_score(x_test, x_anom, m1, fpr)
+binary_eval_report(targets1, scores1)
+```
+ROC plot
+```julia; echo = false
+roc_comparison(targets1, scores1, fpr)
+```
+
+# Centered qunatile take
+
+```julia;
+m2 = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x_val = flower2(1000, npetals=9)
+x = RandomBatches(x_train, 1000, 20000)
+
+qx = (quantile_take(m2, batch, 0.05, 0.02) for batch in x)
+
+loss(x) = -mean(logpdf(m2, x))
+
+ps = Flux.params(m2)
+
+opt = ADAM(0.01)
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, qx, opt)
+
+qval = quantile_take(m2, x_val, 0.05, 0.02)
+println("Final center QT loss: ", loss(qval))
+```
+Heatmap:
+```julia; echo = false
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m2, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+
+Generating anomalies and test set. FPR at 0.05
+```julia; results="hidden"
+x_test = flower2(100000, npetals=9)
+x_anom = 10 .* (rand(2, 5000) .- 0.5)
+fpr = 0.05
+```
+Evaluation
+```julia;
+targets2, scores2 = target_score(x_test, x_anom, m2, fpr)
+binary_eval_report(targets2, scores2)
+```
+ROC plot
+```julia; echo = false
+roc_comparison(targets2, scores2, fpr, 0.02)
+```
+
+
+# Right qunatile take
+
+```julia;
+m3 = sptn(2, 9, 2)
+x_train = flower2(100000, npetals=9)
+x_val = flower2(1000, npetals=9)
+x = RandomBatches(x_train, 1000, 20000)
+
+qx = (right_quantile_take(m3, batch, 0.05, 0.02) for batch in x)
+
+loss(x) = -mean(logpdf(m3, x))
+
+ps = Flux.params(m3)
+
+opt = ADAM(0.01)
+Flux.Optimise.train!(x -> loss(getobs(x)), ps, qx, opt)
+
+qval = right_quantile_take(m3, x_val, 0.05, 0.02)
+println("Final right QT loss: ", loss(qval))
+```
+Heatmap:
+```julia; echo = false
+xx = reduce(hcat,[[v[1],v[2]] for v in Iterators.product(-10.0:0.1:10, -10.0:0.1:10)])
+res = reshape(logpdf(m3, xx), 201, 201)
+Plots.heatmap(exp.(res))
+```
+
+Generating anomalies and test set. FPR at 0.05
+```julia; results="hidden"
+x_test = flower2(100000, npetals=9)
+x_anom = 10 .* (rand(2, 5000) .- 0.5)
+fpr = 0.05
+```
+Evaluation
+```julia;
+targets3, scores3 = target_score(x_test, x_anom, m3, fpr)
+binary_eval_report(targets3, scores3)
+```
+ROC plot
+```julia; echo = false
+roc_comparison(targets3, scores3, fpr)
+```
+
+
+# Comparison of all three versions
+ML evaluation
+```julia;
+binary_eval_report(targets1, scores1)
+```
+Centered QT evaluation
+```julia;
+binary_eval_report(targets2, scores2)
+```
+Right QT evaluation
+```julia;
+binary_eval_report(targets3, scores3)
+```
+ROC plot comparison
+```julia; echo = false
+fpr = 0.05
+tresh_line = [fpr 0.0; fpr 1.0]
+rocplot([targets1, targets2, targets3], [scores1, scores2, scores3], label = ["ML" "C-QT" "R-QT"])
+plot!(tresh_line[:, 1], tresh_line[:, 2], linestyle =:dashdot, linecolor=:grey, label="fpr treshhold")
+```
